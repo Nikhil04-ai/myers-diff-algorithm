@@ -1,8 +1,6 @@
-import java.util.ArrayList;
-import java.util.Arrays;
-
 /**
- * Myers' O(ND) diff algorithm (Myers 1986, the basic greedy version).
+ * Myers' O(ND) diff algorithm, linear-space version (the "middle snake" idea
+ * from section 4 of Myers' 1986 paper).
  *
  * It works on any two sequences of ints, so the same code is used for
  * lines (Part A, each line is turned into an id) and for characters
@@ -15,82 +13,128 @@ import java.util.Arrays;
  */
 public class MyersDiff {
 
+    private final int[] a;
+    private final int[] b;
+    private final boolean[] deleted;
+    private final boolean[] inserted;
+
+    // V arrays. vf[offset + k] is the furthest x reached on diagonal k (k = x - y)
+    // going forward from the top-left corner. vb is the same going backward
+    // from the bottom-right corner (x and y are then counted from the end).
+    private final int[] vf;
+    private final int[] vb;
+    private final int offset;
+
+    private MyersDiff(int[] a, int[] b, boolean[] deleted, boolean[] inserted) {
+        this.a = a;
+        this.b = b;
+        this.deleted = deleted;
+        this.inserted = inserted;
+        int max = (a.length + b.length + 1) / 2;
+        offset = max + 1;
+        vf = new int[2 * max + 3];
+        vb = new int[2 * max + 3];
+    }
+
     public static void diff(int[] a, int[] b, boolean[] deleted, boolean[] inserted) {
-        // Step 1: skip the common start and the common end. They are always kept,
-        // and this makes the search below much smaller.
-        int start = 0;
-        while (start < a.length && start < b.length && a[start] == b[start]) {
-            start++;
-        }
-        int endA = a.length;
-        int endB = b.length;
-        while (endA > start && endB > start && a[endA - 1] == b[endB - 1]) {
-            endA--;
-            endB--;
-        }
-        int n = endA - start;   // length of the middle part of a
-        int m = endB - start;   // length of the middle part of b
+        MyersDiff d = new MyersDiff(a, b, deleted, inserted);
+        d.compare(0, a.length, 0, b.length);
+    }
 
-        // Step 2: the forward search.
-        // v[offset + k] = furthest x reached so far on diagonal k (k = x - y).
-        // After each round d we save a copy of v[-d..d] in trace, so we can
-        // walk the path back afterwards.
-        int max = n + m;
-        int offset = max + 1;
-        int[] v = new int[2 * max + 3];
-        ArrayList<int[]> trace = new ArrayList<>();
-        int finalD = -1;
+    // Finds a minimal diff of a[aLo..aHi) and b[bLo..bHi).
+    private void compare(int aLo, int aHi, int bLo, int bHi) {
+        // Skip the common start and the common end, they are always kept.
+        while (aLo < aHi && bLo < bHi && a[aLo] == b[bLo]) {
+            aLo++;
+            bLo++;
+        }
+        while (aLo < aHi && bLo < bHi && a[aHi - 1] == b[bHi - 1]) {
+            aHi--;
+            bHi--;
+        }
 
-        for (int d = 0; d <= max && finalD < 0; d++) {
+        // If one side is empty, everything left on the other side is an edit.
+        if (aLo == aHi) {
+            for (int j = bLo; j < bHi; j++) inserted[j] = true;
+            return;
+        }
+        if (bLo == bHi) {
+            for (int i = aLo; i < aHi; i++) deleted[i] = true;
+            return;
+        }
+
+        // Otherwise find the middle snake of an optimal path and solve the
+        // part before it and the part after it. Each part needs fewer edits,
+        // so the recursion always ends.
+        int[] snake = middleSnake(aLo, aHi, bLo, bHi);
+        compare(aLo, snake[0], bLo, snake[1]);
+        compare(snake[2], aHi, snake[3], bHi);
+    }
+
+    // Runs the greedy search from both ends at the same time until the two
+    // searches overlap. Returns the snake where they meet as
+    // {startX, startY, endX, endY} in absolute positions.
+    private int[] middleSnake(int aLo, int aHi, int bLo, int bHi) {
+        int n = aHi - aLo;
+        int m = bHi - bLo;
+        int delta = n - m;
+        boolean odd = (delta % 2 != 0);
+        int max = (n + m + 1) / 2;
+
+        vf[offset + 1] = 0;
+        vb[offset + 1] = 0;
+
+        for (int d = 0; d <= max; d++) {
+
+            // Forward search: furthest reaching d-paths from (0, 0).
             for (int k = -d; k <= d; k += 2) {
                 int x;
-                if (k == -d || (k != d && v[offset + k - 1] < v[offset + k + 1])) {
-                    x = v[offset + k + 1];        // move down from diagonal k+1 (insert)
+                if (k == -d || (k != d && vf[offset + k - 1] < vf[offset + k + 1])) {
+                    x = vf[offset + k + 1];          // move down (insert)
                 } else {
-                    x = v[offset + k - 1] + 1;    // move right from diagonal k-1 (delete)
+                    x = vf[offset + k - 1] + 1;      // move right (delete)
                 }
                 int y = x - k;
-                // Follow the snake: equal items cost nothing.
-                while (x < n && y < m && a[start + x] == b[start + y]) {
+                int startX = x;
+                int startY = y;
+                // Follow the snake (diagonal of equal items).
+                while (x < n && y < m && a[aLo + x] == b[bLo + y]) {
                     x++;
                     y++;
                 }
-                v[offset + k] = x;
-                if (x >= n && y >= m) {           // reached the end (n, m)
-                    finalD = d;
-                    break;
+                vf[offset + k] = x;
+
+                // Backward diagonal c is the same as forward diagonal k.
+                int c = delta - k;
+                if (odd && c >= -(d - 1) && c <= d - 1 && x + vb[offset + c] >= n) {
+                    return new int[] {aLo + startX, bLo + startY, aLo + x, bLo + y};
                 }
             }
-            if (finalD < 0) {
-                trace.add(Arrays.copyOfRange(v, offset - d, offset + d + 1));
+
+            // Backward search: furthest reaching d-paths from (n, m).
+            // Here x and y are counted from the end of each sequence.
+            for (int c = -d; c <= d; c += 2) {
+                int x;
+                if (c == -d || (c != d && vb[offset + c - 1] < vb[offset + c + 1])) {
+                    x = vb[offset + c + 1];
+                } else {
+                    x = vb[offset + c - 1] + 1;
+                }
+                int y = x - c;
+                int startX = x;
+                int startY = y;
+                while (x < n && y < m && a[aHi - 1 - x] == b[bHi - 1 - y]) {
+                    x++;
+                    y++;
+                }
+                vb[offset + c] = x;
+
+                int k = delta - c;
+                if (!odd && k >= -d && k <= d && x + vf[offset + k] >= n) {
+                    return new int[] {aHi - x, bHi - y, aHi - startX, bHi - startY};
+                }
             }
         }
-
-        // Step 3: backtrack from (n, m) to (0, 0) using the saved V arrays.
-        // trace.get(d) holds diagonals -d..d, diagonal k is at index k + d.
-        int x = n;
-        int y = m;
-        for (int d = finalD; d > 0; d--) {
-            int[] prev = trace.get(d - 1);
-            int k = x - y;
-            int prevK;
-            if (k == -d || (k != d && prev[k - 1 + (d - 1)] < prev[k + 1 + (d - 1)])) {
-                prevK = k + 1;   // we came down from diagonal k+1
-            } else {
-                prevK = k - 1;   // we came right from diagonal k-1
-            }
-            int prevX = prev[prevK + (d - 1)];
-            int prevY = prevX - prevK;
-
-            if (prevK == k + 1) {
-                inserted[start + prevY] = true;   // the down move inserts b[prevY]
-            } else {
-                deleted[start + prevX] = true;    // the right move deletes a[prevX]
-            }
-            // The snake between the move and (x, y) is kept, so nothing to mark.
-            x = prevX;
-            y = prevY;
-        }
-        // What is left from (0, 0) to (x, y) is the first snake: all kept.
+        throw new IllegalStateException("middle snake not found");
     }
 }
